@@ -180,170 +180,281 @@ def store_mapping(nft_id, wallet_id):
     with open(filename, 'w') as file:
         json.dump(data, file, indent=4)
 
-def store_response(wallet_id,prompt,response):
+def store_response(wallet_id, prompt, response):
     """Store or update the response for a specific wallet ID in a JSON file."""
     file_path = 'conversations.json'
+    print(f"Storing response for wallet_id: {wallet_id}")
+    
+    # Initialize data dictionary
+    data = {}
     
     # Load existing data if the file exists
     if os.path.exists(file_path):
-        with open(file_path, 'r') as file:
-            data = json.load(file)
-    else:
-        data = {}
-
+        try:
+            with open(file_path, 'r') as file:
+                file_content = file.read().strip()
+                
+                if file_content:  # Only try to parse if file is not empty
+                    try:
+                        data = json.loads(file_content)
+                        print(f"Successfully loaded existing conversations data")
+                    except json.JSONDecodeError:
+                        print(f"Error decoding JSON from {file_path}, creating new file")
+                        data = {}  # Reset to empty dict if file is corrupt
+                else:
+                    print(f"Conversations file exists but is empty")
+        except Exception as e:
+            print(f"Error reading conversations file: {str(e)}")
+            # Continue with empty data dictionary
+    
     # Update the response for the specified wallet ID
-    data[wallet_id] = f"Question:{prompt},answer: "+response
+    data[wallet_id] = f"Question:{prompt},answer: {response}"
+    print(f"Updated conversation data for wallet_id: {wallet_id}")
     
     # Write the updated data back to the JSON file
-    with open(file_path, 'w') as file:
-        json.dump(data, file, indent=4)
+    try:
+        with open(file_path, 'w') as file:
+            json.dump(data, file, indent=4)
+        print(f"Successfully wrote conversation data to {file_path}")
+    except Exception as e:
+        print(f"Error writing conversation data: {str(e)}")
 
 def get_wallet_id(nft_id):
     filename = 'map.json'
+    print(f"Attempting to get wallet_id for NFT: {nft_id}")
     try:
+        if not os.path.exists(filename):
+            print(f"Warning: {filename} does not exist")
+            return "File not found."
+        
         with open(filename, 'r') as file:
-            data = json.load(file)
+            file_content = file.read().strip()
+            print(f"map.json content: '{file_content[:100]}'")  # Print first 100 chars for debugging
+            
+            if not file_content:
+                print(f"Warning: {filename} is empty")
+                return "Empty file."
+            
+            # Try to fix malformed JSON if possible
+            try:
+                # First attempt - try to load as is
+                data = json.loads(file_content)
+            except json.JSONDecodeError:
+                print("Initial JSON decode failed, attempting to fix JSON format")
+                
+                # Second attempt - try to fix common JSON issues
+                if file_content.startswith('\ufeff'):  # BOM character
+                    print("Removing BOM character")
+                    file_content = file_content[1:]
+                
+                # Try again with cleaned content
+                try:
+                    data = json.loads(file_content)
+                    print("Successfully loaded JSON after cleanup")
+                except json.JSONDecodeError:
+                    # If we can't fix it, create a new empty mapping
+                    print(f"Could not parse {filename} - creating new empty mapping")
+                    data = {}
+                    # Write the empty mapping back to the file to fix it for next time
+                    with open(filename, 'w') as write_file:
+                        json.dump(data, write_file, indent=4)
+            
+        if nft_id in data:
+            wallet_id = data[nft_id]
+            print(f"Found wallet_id: {wallet_id} for NFT: {nft_id}")
+            return wallet_id
+        else:
+            print(f"NFT ID {nft_id} not found in mapping")
+            return "NFT ID not found."
     except FileNotFoundError:
+        print(f"Error: {filename} not found")
         return "File not found."
-    except json.JSONDecodeError:
-        return "Error decoding JSON."
-    if nft_id in data:
-        return data[nft_id]
-    else:
-        return "NFT ID not found."
-    
+    except Exception as e:
+        print(f"Unexpected error in get_wallet_id: {str(e)}")
+        return f"Error: {str(e)}"
+
 def get_last_conversation(wallet_id):
     """Retrieve the last conversation for a specific wallet ID from conversations.json."""
     file_path = 'conversations.json'
     
-    # Attempt to read the JSON data from the file
-    with open(file_path, 'r') as file:
-        data = json.load(file)
-        # Check if the wallet ID exists in the data
-        if wallet_id in data:
-            return data[wallet_id]
-        else:
-            return "not there. This is your first conversation."
+    # Check if file exists first
+    if not os.path.exists(file_path):
+        return "not there. This is your first conversation."
+    
+    try:
+        # Attempt to read the JSON data from the file
+        with open(file_path, 'r') as file:
+            data = json.load(file)
+            # Check if the wallet ID exists in the data
+            if wallet_id in data:
+                return data[wallet_id]
+            else:
+                return "not there. This is your first conversation."
+    except json.JSONDecodeError:
+        # Handle case where file exists but contains invalid JSON
+        return "not there. This is your first conversation."
 
-def load_agent(NFT_id,prompt):
-    wallet_id = get_wallet_id(NFT_id)
-    convo = get_last_conversation(wallet_id)
-    agent = OnChainAgents(Wallet_Id=wallet_id)
-    file_path = f"DB/{agent.wallet.default_address.address_id}.json"
-    data = read_json_data(file_path)
-    def get_balance(asset_id) -> str:
-        """
-        Get the balance of a specific asset in the agent's wallet.
+def load_agent(NFT_id, prompt):
+    try:
+        print(f"Starting load_agent for NFT_id: {NFT_id}")
+        wallet_id = get_wallet_id(NFT_id)
+        print(f"Retrieved wallet_id: {wallet_id}")
         
-        Parameters:
-        asset_id (str): Asset identifier ("eth", "usdc") or contract address of an ERC-20 token
+        if wallet_id in ["File not found.", "Error decoding JSON.", "NFT ID not found.", "Empty file."]:
+            print(f"Error retrieving wallet_id: {wallet_id}")
+            return agentInteractResponse(
+                response=f"Error: {wallet_id}",
+                isMetaMask=False,
+                walletAddress="unknown",
+                value=None,
+                Responses=0
+            )
         
-        Returns:
-        str: A message showing the current balance of the specified asset.
-        """
-        balance = agent.wallet.balance(asset_id)
-        return f"Current balance of {asset_id}: {balance}"
+        convo = get_last_conversation(wallet_id)
+        print(f"Retrieved conversation history. Length: {len(convo) if convo else 0}")
+        
+        agent = OnChainAgents(Wallet_Id=wallet_id)
+        print(f"Created OnChainAgents with wallet address: {agent.wallet.default_address.address_id}")
+        
+        file_path = f"DB/{agent.wallet.default_address.address_id}.json"
+        print(f"Attempting to read data from: {file_path}")
+        
+        if not os.path.exists(file_path):
+            print(f"Warning: {file_path} does not exist")
+            return agentInteractResponse(
+                response=f"Error: Agent configuration file not found.",
+                isMetaMask=False,
+                walletAddress=agent.wallet.default_address.address_id,
+                value=None,
+                Responses=0
+            )
+            
+        data = read_json_data(file_path)
+        print(f"Data loaded: {data is not None}")
+        
+        if not data:
+            print(f"Error: Failed to load data from {file_path}")
+            return agentInteractResponse(
+                response="Error: Failed to load agent configuration.",
+                isMetaMask=False,
+                walletAddress=agent.wallet.default_address.address_id,
+                value=None,
+                Responses=0
+            )
+            
+        def get_balance(asset_id) -> str:
+            """
+            Get the balance of a specific asset in the agent's wallet.
+            
+            Parameters:
+            asset_id (str): Asset identifier ("eth", "usdc") or contract address of an ERC-20 token
+            
+            Returns:
+            str: A message showing the current balance of the specified asset.
+            """
+            balance = agent.wallet.balance(asset_id)
+            return f"Current balance of {asset_id}: {balance}"
 
-    # def create_token(name, symbol, initial_supply):
-    #     """
-    #     Create a new ERC-20 token.
-        
-    #     Parameters:
-    #     name (str): The name of the token.
-    #     symbol (str): The symbol of the token.
-    #     initial_supply (int): The initial supply of tokens.
-        
-    #     Returns:
-    #     str: A message confirming the token creation with details.
-    #     """
-    #     deployed_contract = agent.wallet.deploy_token(name, symbol, initial_supply)
-    #     deployed_contract.wait()
-    #     return f"Token {name} ({symbol}) created with initial supply of {initial_supply} and contract address {deployed_contract.contract_address}"
+        def transfer_asset(amount, asset_id, destination_address):
+            """
+            Transfer an asset to a specific address.
+            
+            Parameters:
+            amount (Union[int, float, Decimal]): Amount to transfer.
+            asset_id (str): Asset identifier ("eth", "usdc") or contract address of an ERC-20 token.
+            destination_address (str): Recipient's address.
+            
+            Returns:
+            str: A message confirming the transfer or describing an error.
+            """
+            try:
+                is_mainnet = agent.wallet.network_id == "base-mainnet"
+                is_usdc = asset_id.lower() == "usdc"
+                gasless = is_mainnet and is_usdc
+                if asset_id.lower() in ["eth", "usdc"]:
+                    transfer = agent.wallet.transfer(amount,
+                                                    asset_id,
+                                                    destination_address,
+                                                    gasless=gasless)
+                    transfer.wait()
+                    gasless_msg = " (gasless)" if gasless else ""
+                    return f"Transferred {amount} {asset_id}{gasless_msg} to {destination_address}"
+                
+                try:
+                    balance = agent.wallet.balance(asset_id)
+                except UnsupportedAssetError:
+                    return f"Error: The asset {asset_id} is not supported on this network. It may have been recently deployed. Please try again in about 30 minutes."
 
-    def transfer_asset(amount, asset_id, destination_address):
-        """
-        Transfer an asset to a specific address.
-        
-        Parameters:
-        amount (Union[int, float, Decimal]): Amount to transfer.
-        asset_id (str): Asset identifier ("eth", "usdc") or contract address of an ERC-20 token.
-        destination_address (str): Recipient's address.
-        
-        Returns:
-        str: A message confirming the transfer or describing an error.
-        """
-        try:
-            is_mainnet = agent.wallet.network_id == "base-mainnet"
-            is_usdc = asset_id.lower() == "usdc"
-            gasless = is_mainnet and is_usdc
-            if asset_id.lower() in ["eth", "usdc"]:
-                transfer = agent.wallet.transfer(amount,
-                                                asset_id,
-                                                destination_address,
-                                                gasless=gasless)
+                if balance < amount:
+                    return f"Insufficient balance. You have {balance} {asset_id}, but tried to transfer {amount}."
+
+                transfer = agent.wallet.transfer(amount, asset_id, destination_address)
                 transfer.wait()
-                gasless_msg = " (gasless)" if gasless else ""
-                return f"Transferred {amount} {asset_id}{gasless_msg} to {destination_address}"
+                return f"Transferred {amount} {asset_id} to {destination_address}"
+                
+            except Exception as e:
+                return f"Error transferring asset: {str(e)}. If this is a custom token, it may have been recently deployed. Please try again in about 30 minutes, as it needs to be indexed by CDP first."
+
+        ToolKit = []
+        if data:
+            for key in data["Tools"]:
+                if key in Tools.keys():
+                    ToolKit.append(Tools[key])
+                    
+        print(f"Setting up agent with {len(ToolKit)} tools")
+        
+        try:
+            based_agent = Agent(
+                model=OpenAILike(id="llama3.1:70b",api_key=os.getenv("GALADRIAL_API_KEY"),base_url="https://api.galadriel.com/v1"),
+                tools=[get_balance, transfer_asset, ExaTools(api_key=os.getenv("EXA_API_KEY"))]+ToolKit,
+                description=data["Personality"]+f"You have very in depth knowledge in the fields of {data['Concepts']}",
+                instructions=[
+                    "Always display the balance when asked.",
+                    "As long as the prompt is not about transactions or balance, the answer should be long, thorough and based on the personality.",
+                    "Make sure that when you speak you are speaking according to your personality and as if you are in the middle of a conversation with the other person. Make sure there is a flow.",
+                    "Make the conversation as interactive and socaial as possible.",
+                    "Always search for real time data on the question asked and then answer.",
+                    f"Your last conversation was {convo}.",
+                    "Make sure you dont break the flow."
+                ]
+            )
+            print("Agent initialized successfully")
+            
+            run: RunResponse = based_agent.run(prompt)
+            print("Agent run completed successfully")
             
             try:
-                balance = agent.wallet.balance(asset_id)
-            except UnsupportedAssetError:
-                return f"Error: The asset {asset_id} is not supported on this network. It may have been recently deployed. Please try again in about 30 minutes."
-
-            if balance < amount:
-                return f"Insufficient balance. You have {balance} {asset_id}, but tried to transfer {amount}."
-
-            transfer = agent.wallet.transfer(amount, asset_id, destination_address)
-            transfer.wait()
-            return f"Transferred {amount} {asset_id} to {destination_address}"
-                
-        except Exception as e:
-            return f"Error transferring asset: {str(e)}. If this is a custom token, it may have been recently deployed. Please try again in about 30 minutes, as it needs to be indexed by CDP first."
-
-    # def mint_nft(contract_address, mint_to):
-    #     """
-    #     Mint an NFT to a specified address.
+                store_response(wallet_id, prompt, run.content)
+                print("Response stored successfully")
+            except Exception as e:
+                print(f"Error storing response: {str(e)}")
+                # Continue even if storage fails
             
-    #     Parameters:
-    #     contract_address (str): Address of the NFT contract.
-    #     mint_to (str): Address to mint NFT to.
-            
-    #     Returns:
-    #     str: Status message about the NFT minting.
-    #     """
-    #     try:
-    #         mint_args = {"to": mint_to, "quantity": "1"}
-
-    #         mint_invocation = agent.wallet.invoke_contract(
-    #             contract_address=contract_address, method="mint", args=mint_args)
-    #         mint_invocation.wait()
-
-    #         return f"Successfully minted NFT to {mint_to}"
-
+            return agentInteractResponse(
+                response=run.content,
+                isMetaMask=False,
+                walletAddress=agent.wallet.default_address.address_id,
+                value=None,
+                Responses=0
+            )
         except Exception as e:
-            return f"Error minting NFT: {str(e)}"
-    ToolKit = []
-    if data:
-        for key in data["Tools"]:
-            if key in Tools.keys():
-                ToolKit.append(Tools[key])
-    based_agent = Agent(
-        model=OpenAILike(id="llama3.1:70b",api_key=os.getenv("GALADRIAL_API_KEY"),base_url="https://api.galadriel.com/v1"),
-        tools=[get_balance, transfer_asset, ExaTools(api_key=os.getenv("EXA_API_KEY"))]+ToolKit,
-        description=data["Personality"]+f"You have very in depth knowledge in the fields of {data["Concepts"]}",
-        instructions=[
-            "Always display the balance when asked.",
-            "As long as the prompt is not about transactions or balance, the answer should be long, thorough and based on the personality.",
-            "Make sure that when you speak you are speaking according to your personality and as if you are in the middle of a conversation with the other person. Make sure there is a flow."
-            "Make the conversation as interactive and socaial as possible."
-            "Always search for real time data on the question asked and then answer."
-            f"Your last conversation was {convo}."
-            "Make sure you dont break the flow."
-        ]
-    )
-    run: RunResponse = based_agent.run(prompt)
-    store_response(wallet_id,prompt,run.content)
-    return agentInteractResponse(response=run.content,isMetaMask=False,walletAddress=agent.wallet.default_address.address_id,value=None,Responses=0)
+            print(f"Error in agent setup or execution: {str(e)}")
+            return agentInteractResponse(
+                response=f"Error processing your request: {str(e)}",
+                isMetaMask=False,
+                walletAddress=agent.wallet.default_address.address_id if agent and hasattr(agent, 'wallet') else "unknown",
+                value=None,
+                Responses=0
+            )
+    except Exception as e:
+        print(f"Unexpected error in load_agent: {str(e)}")
+        return agentInteractResponse(
+            response=f"An unexpected error occurred: {str(e)}",
+            isMetaMask=False,
+            walletAddress="unknown",
+            value=None,
+            Responses=0
+        )
 
 def CreateAgent(prompt,NFT_id):
     agent = OnChainAgents()
